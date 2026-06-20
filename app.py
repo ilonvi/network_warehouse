@@ -34,13 +34,22 @@ def logout():
 
 # --- ВІКНО ВХОДУ ---
 if not st.session_state.authenticated:
-    st.subheader("Вхід до системи обліку")
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Логін")
-        password = st.text_input("Пароль", type="password")
-        submit = st.form_submit_button("Увійти")
-        if submit:
-            login(username, password)
+    
+    side_space1, center_card, side_space2 = st.columns([1, 2, 1])
+    
+    with center_card:
+        
+        st.subheader("Вхід до системи обліку")
+        
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Логін")
+            password = st.text_input("Пароль", type="password")
+            
+            
+            submit = st.form_submit_button("Увійти", use_container_width=True)
+            if submit:
+                login(username, password)
+                
     st.stop()
 
 
