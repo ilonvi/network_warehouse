@@ -4,22 +4,73 @@ from db_config import get_db_connection
 
 # Налаштування сторінки
 st.set_page_config(page_title="Network Warehouse", layout="wide")
-st.title("ОБЛІК МЕРЕЖЕВОГО ОБЛАДНАННЯ")
 
-# Навігація
-menu = ["Аналітична панель", "Номенклатура", "Проведення операцій", "Журнал аудиту"]
+
+
+# --- СИСТЕМА АВТОРИЗАЦІЇ ТА РОЛЕЙ ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "user_role" not in st.session_state:
+    st.session_state.user_role = None
+
+def login(username, password):
+    # Паролі для входу на сайт тепер теж беруться з хмарного сейфа Streamlit Secrets
+    if username == "admin" and password == st.secrets["ADMIN_PASSWORD"]:
+        st.session_state.authenticated = True
+        st.session_state.user_role = "Адміністратор"
+        st.rerun()
+    elif username == "manager" and password == st.secrets["MANAGER_PASSWORD"]:
+        st.session_state.authenticated = True
+        st.session_state.user_role = "Менеджер"
+        st.rerun()
+    else:
+        st.error("Неправильний логін або пароль!")
+
+def logout():
+    st.session_state.authenticated = False
+    st.session_state.user_role = None
+    st.rerun()
+
+
+# --- ВІКНО ВХОДУ ---
+if not st.session_state.authenticated:
+    st.subheader("Вхід до системи обліку")
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Логін")
+        password = st.text_input("Пароль", type="password")
+        submit = st.form_submit_button("Увійти")
+        if submit:
+            login(username, password)
+    st.stop()
+
+
+# --- ГОЛОВНИЙ ІНТЕРФЕЙС ---
+log_col1, log_col2 = st.columns([8, 2])
+with log_col1:
+    st.title("ОБЛІК МЕРЕЖЕВОГО ОБЛАДНАННЯ")
+    st.caption(f"Авторизовано як: **{st.session_state.user_role}**")
+with log_col2:
+    st.write("")  # Невеликий відступ для вирівнювання кнопки
+    if st.button("Вийти з аккаунту", use_container_width=True):
+        logout()
+
+
+# --- ДИНАМІЧНА НАВІГАЦІЯ ЗАЛЕЖНО ВІД РОЛІ ---
+if st.session_state.user_role == "Адміністратор":
+    menu = ["Аналітична панель", "Номенклатура", "Проведення операцій", "Журнал аудиту"]
+else:
+    # Менеджер має обмежені права — не бачить операцій та журналу аудиту
+    menu = ["Аналітична панель", "Номенклатура"]
+
 choice = st.segmented_control("Навігація системи:", menu, default="Аналітична панель", label_visibility="collapsed")
 st.divider()
 
 conn = get_db_connection()
 
 if conn:
-    if hasattr(conn, 'cursor') and 'dictionary' in str(conn.cursor):
-        cursor = conn.cursor(dictionary=True)
-    else:
-        cursor = conn.cursor()
+    cursor = conn.cursor()
     
-    
+    # Завантаження актуальних даних про товари з бази
     cursor.execute("""
         SELECT p.id, p.brand, p.model, p.price, p.stock_quantity, p.specifications, p.image_url, c.name AS category 
         FROM products p
@@ -32,7 +83,7 @@ if conn:
     else:
         df_products = pd.DataFrame(columns=["id", "brand", "model", "price", "stock_quantity", "specifications", "image_url", "category"])
 
-    # --- АНАЛІТИЧНА ПАНЕЛЬ ---
+    # --- 1. АНАЛІТИЧНА ПАНЕЛЬ (Бачать усі) ---
     if choice == "Аналітична панель":
         if not df_products.empty:
             col1, col2, col3, col4 = st.columns(4)
@@ -59,11 +110,18 @@ if conn:
         else:
             st.info("База порожня.")
 
-    # --- НОМЕНКЛАТУРА ---
+    # --- 2. НОМЕНКЛАТУРА ---
     elif choice == "Номенклатура":
-        tab1, tab2, tab3 = st.tabs(["Реєстр", "Новий товар", "Категорії"])
+        # Якщо Адмін — показуємо всі таби. Якщо Менеджер — тільки реєстр (перегляд)
+        if st.session_state.user_role == "Адміністратор":
+            tabs_list = ["Реєстр", "Новий товар", "Категорії"]
+        else:
+            tabs_list = ["Реєстр"]
+            
+        tabs = st.tabs(tabs_list)
         
-        with tab1:
+        # ТАБ: РЕЄСТР (Доступний Адміну та Менеджеру)
+        with tabs[0]:
             if not df_products.empty:
                 search = st.text_input("Пошук за брендом або моделлю")
                 display_df = df_products.copy()
@@ -73,7 +131,6 @@ if conn:
                         display_df["brand"].str.contains(search, case=False, na=False)
                     ]
                 
-                #  щоб подивитися картку з фото
                 st.subheader("Картка детального перегляду")
                 item_options = {f"{r['brand']} {r['model']}": r for _, r in display_df.iterrows()}
                 selected_preview = st.selectbox("Оберіть товар для перегляду:", ["-- Не обрано --"] + list(item_options.keys()))
@@ -83,7 +140,6 @@ if conn:
                     img_col, info_col = st.columns([1, 2])
                     
                     with img_col:
-                        # Якщо посилання є, виводимо фото, інакше — стандартну заглушку
                         if pd.notna(prod_data['image_url']) and str(prod_data['image_url']).strip() != "":
                             st.image(prod_data['image_url'], caption=selected_preview, use_container_width=True)
                         else:
@@ -98,64 +154,62 @@ if conn:
                 st.divider()
                 st.subheader("Загальний реєстр даних")
                 display_df.insert(0, "№ п/п", range(1, len(display_df) + 1))
-                # В загальній таблиці посилання на фото краще приховати, щоб не захаращувати інтерфейс
                 cols_to_show = ["№ п/п", "brand", "model", "category", "price", "stock_quantity", "specifications"]
                 st.dataframe(display_df[cols_to_show], hide_index=True, use_container_width=True)
             else:
                 st.info("Немає товарів")
 
-        with tab2:
-            cursor.execute("SELECT id, name FROM categories")
-            categories = cursor.fetchall()
-            if not categories:
-                st.warning("Спочатку створіть категорію")
-            else:
-                cat_map = {c["name"] if isinstance(c, dict) else c[1]: c["id"] if isinstance(c, dict) else c[0] for c in categories}
-                with st.form("add_product", clear_on_submit=True):
-                    col1, col2 = st.columns(2)
-                    brand = col1.text_input("Бренд")
-                    model = col1.text_input("Модель")
-                    category_name = col1.selectbox("Категорія", list(cat_map.keys()))
-                    price = col2.number_input("Ціна", min_value=0.0, format="%.2f")
-                    stock = col2.number_input("Початковий залишок", min_value=0, step=1)
-                    
-                    #  поле для URL-адреси фотографії
-                    image_url = st.text_input("Посилання на фото продукту (URL)")
-                    specs = st.text_area("Характеристики")
+        # ТАБИ СТВОРЕННЯ (Тільки для Адміністратора)
+        if st.session_state.user_role == "Адміністратор":
+            with tabs[1]:  # Новий товар
+                cursor.execute("SELECT id, name FROM categories")
+                categories = cursor.fetchall()
+                if not categories:
+                    st.warning("Спочатку створіть категорію")
+                else:
+                    cat_map = {c["name"]: c["id"] for c in categories}
+                    with st.form("add_product", clear_on_submit=True):
+                        col1, col2 = st.columns(2)
+                        brand = col1.text_input("Бренд")
+                        model = col1.text_input("Модель")
+                        category_name = col1.selectbox("Категорія", list(cat_map.keys()))
+                        price = col2.number_input("Ціна", min_value=0.0, format="%.2f")
+                        stock = col2.number_input("Початковий залишок", min_value=0, step=1)
+                        image_url = st.text_input("Посилання на photo продукту (URL)")
+                        specs = st.text_area("Характеристики")
 
-                    if st.form_submit_button("Додати") and brand and model:
-                        #  збереження посилання в INSERT
-                        cursor.execute("""
-                            INSERT INTO products (category_id, model, brand, price, stock_quantity, specifications, image_url) 
-                            VALUES (%s, %s, %s, %s, 0, %s, %s)
-                        """, (cat_map[category_name], model, brand, price, specs, image_url))
-                        product_id = cursor.lastrowid
-                        
-                        if stock > 0:
+                        if st.form_submit_button("Додати") and brand and model:
                             cursor.execute("""
-                                INSERT INTO operation_logs (product_id, operation_type, quantity, comment) 
-                                VALUES (%s, 'INCOMING', %s, 'Initial stock')
-                            """, (product_id, stock))
-                        
-                        conn.commit()
-                        st.success("Товар успішно додано!")
-                        st.rerun()
-                        
-        with tab3:
-            with st.form("add_category", clear_on_submit=True):
-                name = st.text_input("Назва категорії")
-                desc = st.text_input("Опис категорії")
-                if st.form_submit_button("Створити") and name:
-                    try:
-                        cursor.execute("INSERT INTO categories (name, description) VALUES (%s, %s)", (name, desc))
-                        conn.commit()
-                        st.success("Категорію створено")
-                        st.rerun()
-                    except Exception:
-                        st.error("Категорія вже існує")
+                                INSERT INTO products (category_id, model, brand, price, stock_quantity, specifications, image_url) 
+                                VALUES (%s, %s, %s, %s, 0, %s, %s)
+                            """, (cat_map[category_name], model, brand, price, specs, image_url))
+                            product_id = cursor.lastrowid
+                            
+                            if stock > 0:
+                                cursor.execute("""
+                                    INSERT INTO operation_logs (product_id, operation_type, quantity, comment) 
+                                    VALUES (%s, 'INCOMING', %s, 'Initial stock')
+                                """, (product_id, stock))
+                            
+                            conn.commit()
+                            st.success("Товар успішно додано!")
+                            st.rerun()
+                            
+            with tabs[2]:  # Категорії
+                with st.form("add_category", clear_on_submit=True):
+                    name = st.text_input("Назва категорії")
+                    desc = st.text_input("Опис категорії")
+                    if st.form_submit_button("Створити") and name:
+                        try:
+                            cursor.execute("INSERT INTO categories (name, description) VALUES (%s, %s)", (name, desc))
+                            conn.commit()
+                            st.success("Категорію створено")
+                            st.rerun()
+                        except Exception:
+                            st.error("Категорія вже існує")
 
-    # --- ПРОВЕДЕННЯ ОПЕРАЦІЙ ---
-    elif choice == "Проведення операцій":
+    # --- 3. ПРОВЕДЕННЯ ОПЕРАЦІЙ (Тільки для Адміністратора) ---
+    elif choice == "Проведення операцій" and st.session_state.user_role == "Адміністратор":
         if df_products.empty:
             st.info("Немає товарів для проведення операцій")
         else:
@@ -184,8 +238,8 @@ if conn:
                         st.success("Операцію проведено")
                         st.rerun()
 
-    # --- ЖУРНАЛ АУДИТУ ---
-    elif choice == "Журнал аудиту":
+    # --- 4. ЖУРНАЛ АУДИТУ (Тільки для Адміністратора) ---
+    elif choice == "Журнал аудиту" and st.session_state.user_role == "Адміністратор":
         st.subheader("Історія операцій")
         cursor.execute("""
             SELECT l.id, CONCAT(p.brand, ' ', p.model) AS product, l.operation_type, l.quantity, l.operation_date, l.comment
